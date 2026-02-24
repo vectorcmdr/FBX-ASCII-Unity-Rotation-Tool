@@ -5,7 +5,11 @@
 // properties within "Model: \"Mesh\"" sections, and moves their values to new "GeometricRotation" properties.
 // It creates new files with "_fixed" appended to the original filename, preserving the original files.
 //
-// Usage: Place this executable in the same directory as your .fbx files and run it. It will process all .fbx files and output fixed versions.
+// It also processes Unity Prefab files and updates the Transform: m_LocalRotation: and m_LocalScale: properties
+// to match the changes made in the FBX files, ensuring consistency between the model and prefab data.
+//
+// Usage: Place this executable in the same directory as your .fbx and or .prefab files and run it.
+// It will process all .fbx and .prefab files and output fixed versions.
 // License: MIT License (https://opensource.org/licenses/MIT)
 
 using System;
@@ -18,157 +22,160 @@ class Program
     static void Main(string[] args)
     {
         string directory = AppContext.BaseDirectory;
-        string[] fbxFiles = Directory.GetFiles(directory, "*.fbx");
 
-        if (fbxFiles.Length == 0)
+        string[] fbxFiles = Directory.GetFiles(directory, "*.fbx");
+        string[] prefabFiles = Directory.GetFiles(directory, "*.prefab");
+
+        if (fbxFiles.Length == 0 && prefabFiles.Length == 0)
         {
-            Console.WriteLine("No .fbx files found in the current directory.");
+            Console.WriteLine("No .fbx or .prefab files found in the current directory.");
             return;
         }
 
+        // Process FBX files
         foreach (string filePath in fbxFiles)
         {
-            // Skip already-fixed files
             if (Path.GetFileNameWithoutExtension(filePath).EndsWith("_fixed", StringComparison.OrdinalIgnoreCase))
             {
                 Console.WriteLine($"Skipping already-fixed file: {Path.GetFileName(filePath)}");
                 continue;
             }
 
-            Console.WriteLine($"Processing: {Path.GetFileName(filePath)}");
+            Console.WriteLine($"Processing FBX: {Path.GetFileName(filePath)}");
 
-            // Check if the file is ASCII FBX (not binary)
             if (!IsAsciiFbx(filePath))
             {
                 Console.WriteLine($"  Skipped: '{Path.GetFileName(filePath)}' is binary FBX, not ASCII.");
                 continue;
             }
 
-            try
+            ProcessFbxFile(filePath);
+        }
+
+        // Process Prefab files
+        foreach (string filePath in prefabFiles)
+        {
+            if (Path.GetFileNameWithoutExtension(filePath).EndsWith("_fixed", StringComparison.OrdinalIgnoreCase))
             {
-                List<string> lines = new List<string>(File.ReadAllLines(filePath));
-                int rotationCount = 0;
-                int scalingCount = 0;
-
-                bool inModelSection = false;
-                bool inProperties70 = false;
-                int braceDepthModel = 0;
-                int braceDepthProperties = 0;
-
-                // Track the start index of the current Properties70 block
-                int properties70StartIndex = -1;
-
-                for (int i = 0; i < lines.Count; i++)
-                {
-                    string line = lines[i];
-                    string trimmed = line.TrimStart();
-
-                    // Detect entering a Model: section
-                    if (!inModelSection && trimmed.StartsWith("Model:") && trimmed.Contains("\"Mesh\""))
-                    {
-                        inModelSection = true;
-                        braceDepthModel = 0;
-                        braceDepthModel += CountChar(line, '{') - CountChar(line, '}');
-                        continue;
-                    }
-
-                    if (inModelSection)
-                    {
-                        braceDepthModel += CountChar(line, '{') - CountChar(line, '}');
-
-                        // Detect entering Properties70: within a Model section
-                        if (!inProperties70 && trimmed.StartsWith("Properties70:"))
-                        {
-                            inProperties70 = true;
-                            braceDepthProperties = 0;
-                            braceDepthProperties += CountChar(line, '{') - CountChar(line, '}');
-                            properties70StartIndex = i;
-                            continue;
-                        }
-
-                        if (inProperties70)
-                        {
-                            braceDepthProperties += CountChar(line, '{') - CountChar(line, '}');
-
-                            // Check for Lcl Rotation
-                            if (trimmed.StartsWith("P:") && trimmed.Contains("\"Lcl Rotation\""))
-                            {
-                                if (ProcessLclProperty(lines, ref i, properties70StartIndex,
-                                        "Lcl Rotation", "GeometricRotation", "0,0,0"))
-                                {
-                                    rotationCount++;
-                                }
-                            }
-                            // Check for Lcl Scaling
-                            else if (trimmed.StartsWith("P:") && trimmed.Contains("\"Lcl Scaling\""))
-                            {
-                                if (ProcessLclProperty(lines, ref i, properties70StartIndex,
-                                        "Lcl Scaling", "GeometricScaling", "1,1,1"))
-                                {
-                                    scalingCount++;
-                                }
-                            }
-
-                            // Check if we've exited Properties70
-                            if (braceDepthProperties <= 0)
-                            {
-                                inProperties70 = false;
-                                properties70StartIndex = -1;
-                            }
-                        }
-
-                        // Check if we've exited the Model section
-                        if (braceDepthModel <= 0)
-                        {
-                            inModelSection = false;
-                            inProperties70 = false;
-                            properties70StartIndex = -1;
-                        }
-                    }
-                }
-
-                int totalModifications = rotationCount + scalingCount;
-
-                if (totalModifications > 0)
-                {
-                    string outputFileName = Path.GetFileNameWithoutExtension(filePath) + "_fixed.fbx";
-                    string outputPath = Path.Combine(Path.GetDirectoryName(filePath)!, outputFileName);
-                    File.WriteAllLines(outputPath, lines);
-                    Console.WriteLine($"  {rotationCount} rotation(s) and {scalingCount} scaling(s) moved to Geometric properties. Saved: {outputFileName}");
-                }
-                else
-                {
-                    Console.WriteLine("  No 'Lcl Rotation' or 'Lcl Scaling' entries found to modify.");
-                }
+                Console.WriteLine($"Skipping already-fixed file: {Path.GetFileName(filePath)}");
+                continue;
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"  Error processing file: {ex.Message}");
-            }
+
+            Console.WriteLine($"Processing Prefab: {Path.GetFileName(filePath)}");
+            ProcessPrefabFile(filePath);
         }
 
         Console.WriteLine("\nDone. Press any key to exit.");
         Console.ReadKey();
     }
 
-    /// <summary>
-    /// Processes a Lcl property line (Rotation or Scaling), moving its values to the
-    /// corresponding Geometric property and zeroing/resetting the original.
-    /// </summary>
-    /// <param name="lines">The full list of file lines.</param>
-    /// <param name="currentIndex">Reference to the current line index (may shift on insert).</param>
-    /// <param name="properties70StartIndex">The start index of the Properties70 block.</param>
-    /// <param name="lclName">The Lcl property name, e.g. "Lcl Rotation" or "Lcl Scaling".</param>
-    /// <param name="geometricName">The Geometric property name, e.g. "GeometricRotation" or "GeometricScaling".</param>
-    /// <param name="defaultValues">The default/reset values, e.g. "0,0,0" for rotation or "1,1,1" for scaling.</param>
-    /// <returns>True if a modification was made.</returns>
+    // =========================================================================
+    //  FBX Processing
+    // =========================================================================
+
+    static void ProcessFbxFile(string filePath)
+    {
+        try
+        {
+            List<string> lines = new List<string>(File.ReadAllLines(filePath));
+            int rotationCount = 0;
+            int scalingCount = 0;
+
+            bool inModelSection = false;
+            bool inProperties70 = false;
+            int braceDepthModel = 0;
+            int braceDepthProperties = 0;
+            int properties70StartIndex = -1;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string line = lines[i];
+                string trimmed = line.TrimStart();
+
+                if (!inModelSection && trimmed.StartsWith("Model:") && trimmed.Contains("\"Mesh\""))
+                {
+                    inModelSection = true;
+                    braceDepthModel = 0;
+                    braceDepthModel += CountChar(line, '{') - CountChar(line, '}');
+                    continue;
+                }
+
+                if (inModelSection)
+                {
+                    braceDepthModel += CountChar(line, '{') - CountChar(line, '}');
+
+                    if (!inProperties70 && trimmed.StartsWith("Properties70:"))
+                    {
+                        inProperties70 = true;
+                        braceDepthProperties = 0;
+                        braceDepthProperties += CountChar(line, '{') - CountChar(line, '}');
+                        properties70StartIndex = i;
+                        continue;
+                    }
+
+                    if (inProperties70)
+                    {
+                        braceDepthProperties += CountChar(line, '{') - CountChar(line, '}');
+
+                        if (trimmed.StartsWith("P:") && trimmed.Contains("\"Lcl Rotation\""))
+                        {
+                            if (ProcessLclProperty(lines, ref i, properties70StartIndex,
+                                    "Lcl Rotation", "GeometricRotation", "0,0,0"))
+                            {
+                                rotationCount++;
+                            }
+                        }
+                        else if (trimmed.StartsWith("P:") && trimmed.Contains("\"Lcl Scaling\""))
+                        {
+                            if (ProcessLclProperty(lines, ref i, properties70StartIndex,
+                                    "Lcl Scaling", "GeometricScaling", "1,1,1"))
+                            {
+                                scalingCount++;
+                            }
+                        }
+
+                        if (braceDepthProperties <= 0)
+                        {
+                            inProperties70 = false;
+                            properties70StartIndex = -1;
+                        }
+                    }
+
+                    if (braceDepthModel <= 0)
+                    {
+                        inModelSection = false;
+                        inProperties70 = false;
+                        properties70StartIndex = -1;
+                    }
+                }
+            }
+
+            int totalModifications = rotationCount + scalingCount;
+
+            if (totalModifications > 0)
+            {
+                string outputFileName = Path.GetFileNameWithoutExtension(filePath) + "_fixed.fbx";
+                string outputPath = Path.Combine(Path.GetDirectoryName(filePath)!, outputFileName);
+                File.WriteAllLines(outputPath, lines);
+                Console.WriteLine($"  {rotationCount} rotation(s) and {scalingCount} scaling(s) moved to Geometric properties. Saved: {outputFileName}");
+            }
+            else
+            {
+                Console.WriteLine("  No 'Lcl Rotation' or 'Lcl Scaling' entries found to modify.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Error processing FBX file: {ex.Message}");
+        }
+    }
+
     static bool ProcessLclProperty(List<string> lines, ref int currentIndex, int properties70StartIndex,
         string lclName, string geometricName, string defaultValues)
     {
         string line = lines[currentIndex];
         string trimmed = line.TrimStart();
 
-        // Build regex to match: P: "Lcl Rotation", "Lcl Rotation", "", "A+", X, Y, Z
         string escapedName = Regex.Escape(lclName);
         string pattern = $@"^P:\s*""{escapedName}""\s*,\s*""{escapedName}""\s*,\s*""[^""]*""\s*,\s*""([^""]*)""\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*(.+)$";
 
@@ -201,7 +208,6 @@ class Program
             for (int j = currentIndex + 1; j < lines.Count; j++)
             {
                 string checkTrimmed = lines[j].TrimStart();
-                // Stop if we've left the Properties70 block (closing brace)
                 if (checkTrimmed.StartsWith("}"))
                     break;
                 if (checkTrimmed.StartsWith("P:") && checkTrimmed.Contains($"\"{geometricName}\""))
@@ -214,25 +220,206 @@ class Program
 
         if (existingGeoIndex >= 0)
         {
-            // Update the existing Geometric line's values in place
             string geoIndent = lines[existingGeoIndex].Substring(0,
                 lines[existingGeoIndex].Length - lines[existingGeoIndex].TrimStart().Length);
             lines[existingGeoIndex] = $"{geoIndent}P: \"{geometricName}\", \"Vector3D\", \"Vector\", \"\",{x},{y},{z}";
         }
         else
         {
-            // Insert a new Geometric line above the Lcl line
             string geometricLine = $"{indent}P: \"{geometricName}\", \"Vector3D\", \"Vector\", \"\",{x},{y},{z}";
             lines.Insert(currentIndex, geometricLine);
-            // The current Lcl line shifted down by one
             currentIndex++;
         }
 
-        // Zero/reset the Lcl line
         lines[currentIndex] = $"{indent}P: \"{lclName}\", \"{lclName}\", \"\", \"{aValue}\",{defaultValues}";
 
         return true;
     }
+
+    // =========================================================================
+    //  Prefab (Unity YAML) Processing
+    // =========================================================================
+
+    static void ProcessPrefabFile(string filePath)
+    {
+        try
+        {
+            List<string> lines = new List<string>(File.ReadAllLines(filePath));
+            int rotationCount = 0;
+            int scalingCount = 0;
+
+            bool inTransform = false;
+            int transformIndent = -1;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string line = lines[i];
+
+                // Skip empty lines without changing state
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                int currentIndent = GetYamlIndent(line);
+                string trimmed = line.TrimStart();
+
+                // Unity YAML document separators (--- !u!...) reset context
+                if (trimmed.StartsWith("---"))
+                {
+                    inTransform = false;
+                    transformIndent = -1;
+                    continue;
+                }
+
+                // Detect a Transform component block.
+                // In Unity prefabs this appears as a top-level key like "Transform:" or
+                // as part of a stripped document "--- !u!4 &xxxx" followed by properties.
+                // The component type line looks like: "  m_ObjectHideFlags: ..." after a
+                // "--- !u!4" header OR explicitly "Transform:".
+                // We handle both by detecting the "--- !u!4" document header (Transform
+                // component class ID) or an explicit "Transform:" key.
+
+                if (trimmed.StartsWith("--- !u!4 ") || trimmed.StartsWith("--- !u!4&"))
+                {
+                    // This is a Transform component document
+                    inTransform = true;
+                    transformIndent = 0; // Properties will be at indent > 0
+                    continue;
+                }
+
+                // Also catch explicit "Transform:" mapping key (less common but possible)
+                if (trimmed == "Transform:" || trimmed.StartsWith("Transform:"))
+                {
+                    inTransform = true;
+                    transformIndent = currentIndent;
+                    continue;
+                }
+
+                if (inTransform)
+                {
+                    // If we hit a new document separator or a line at the same/lower indent
+                    // that is a different top-level key, we've left the Transform block.
+                    // (Document separators are already handled above.)
+
+                    // Detect m_LocalRotation
+                    if (trimmed.StartsWith("m_LocalRotation:"))
+                    {
+                        // Value can be inline: m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+                        // or on subsequent indented lines (flow vs block style).
+                        if (trimmed.Contains("{"))
+                        {
+                            // Inline flow mapping — replace the whole value
+                            string indent = line.Substring(0, currentIndent);
+                            lines[i] = $"{indent}m_LocalRotation: {{x: 0, y: 0, z: 0, w: 1}}";
+                            rotationCount++;
+                        }
+                        else
+                        {
+                            // Block-style mapping on subsequent lines:
+                            //   m_LocalRotation:
+                            //     x: 0.1
+                            //     y: 0.2
+                            //     z: 0.3
+                            //     w: 0.9
+                            // Replace with inline form
+                            string indent = line.Substring(0, currentIndent);
+                            lines[i] = $"{indent}m_LocalRotation: {{x: 0, y: 0, z: 0, w: 1}}";
+
+                            // Remove subsequent indented child lines (x:, y:, z:, w:)
+                            while (i + 1 < lines.Count)
+                            {
+                                string nextTrimmed = lines[i + 1].TrimStart();
+                                int nextIndent = GetYamlIndent(lines[i + 1]);
+                                if (nextIndent > currentIndent &&
+                                    (nextTrimmed.StartsWith("x:") || nextTrimmed.StartsWith("y:") ||
+                                     nextTrimmed.StartsWith("z:") || nextTrimmed.StartsWith("w:")))
+                                {
+                                    lines.RemoveAt(i + 1);
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+
+                            rotationCount++;
+                        }
+                        continue;
+                    }
+
+                    // Detect m_LocalScale
+                    if (trimmed.StartsWith("m_LocalScale:"))
+                    {
+                        if (trimmed.Contains("{"))
+                        {
+                            string indent = line.Substring(0, currentIndent);
+                            lines[i] = $"{indent}m_LocalScale: {{x: 1, y: 1, z: 1}}";
+                            scalingCount++;
+                        }
+                        else
+                        {
+                            string indent = line.Substring(0, currentIndent);
+                            lines[i] = $"{indent}m_LocalScale: {{x: 1, y: 1, z: 1}}";
+
+                            while (i + 1 < lines.Count)
+                            {
+                                string nextTrimmed = lines[i + 1].TrimStart();
+                                int nextIndent = GetYamlIndent(lines[i + 1]);
+                                if (nextIndent > currentIndent &&
+                                    (nextTrimmed.StartsWith("x:") || nextTrimmed.StartsWith("y:") ||
+                                     nextTrimmed.StartsWith("z:")))
+                                {
+                                    lines.RemoveAt(i + 1);
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+
+                            scalingCount++;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            int totalModifications = rotationCount + scalingCount;
+
+            if (totalModifications > 0)
+            {
+                string outputFileName = Path.GetFileNameWithoutExtension(filePath) + "_fixed.prefab";
+                string outputPath = Path.Combine(Path.GetDirectoryName(filePath)!, outputFileName);
+                File.WriteAllLines(outputPath, lines);
+                Console.WriteLine($"  {rotationCount} rotation(s) and {scalingCount} scaling(s) reset in Transform components. Saved: {outputFileName}");
+            }
+            else
+            {
+                Console.WriteLine("  No Transform m_LocalRotation or m_LocalScale entries found to modify.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Error processing Prefab file: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Returns the number of leading spaces for a YAML line (indent level).
+    /// </summary>
+    static int GetYamlIndent(string line)
+    {
+        int count = 0;
+        foreach (char c in line)
+        {
+            if (c == ' ') count++;
+            else break;
+        }
+        return count;
+    }
+
+    // =========================================================================
+    //  Shared Utilities
+    // =========================================================================
 
     /// <summary>
     /// Checks whether an FBX file is ASCII format.
