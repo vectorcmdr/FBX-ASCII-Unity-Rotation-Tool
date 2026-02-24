@@ -316,10 +316,10 @@ class Program
                         {
                             // Block-style mapping on subsequent lines:
                             //   m_LocalRotation:
-                            //     x: 0.1
-                            //     y: 0.2
-                            //     z: 0.3
-                            //     w: 0.9
+                            //     x: 0
+                            //     y: 0
+                            //     z: 0
+                            //     w: 1
                             // Replace with inline form
                             string indent = line.Substring(0, currentIndent);
                             lines[i] = $"{indent}m_LocalRotation: {{x: 0, y: 0, z: 0, w: 1}}";
