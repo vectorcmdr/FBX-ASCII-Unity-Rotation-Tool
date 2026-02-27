@@ -3,7 +3,7 @@
 A console tool to rebake nested and merged **ASCII** FBX (and rebase Unity prefab) files.<br>
 
 ### How It Works:
-It essentially does what Maya/3DS/Blender do when you set xform before export, but without introducing program specific weirdness, changing mat orders, geometry ordering, changing FBX versions, hashes, or anything else like that.
+It essentially does what Maya/3DS/Blender do when you set xform before export, but without introducing program specific weirdness, changing mat orders, geometry ordering, changing FBX versions, hashes, IDs, or anything else like that.
 
 It does this by processesing ASCII format FBX files in it's run directory and bakes original local rotation, scale etc. (``Properties70``) into geometry properties (``Geometry``) and resets the original properties.<br>
 It also processes Unity prefab (YAML) files that correspond to the FBX files and resets ``m_LocalRotation`` to identity quaternion, ``m_LocalScale`` to ``(1,1,1)``, ``m_LocalEulerAnglesHint`` to ``(0,0,0)``.
